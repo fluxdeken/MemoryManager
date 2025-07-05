@@ -79,11 +79,11 @@ private:
 		return false;
 	}
 
-	void ApplyRelocations(BYTE* mapped_image, PIMAGE_OPTIONAL_HEADER64 opt_header, ULONGLONG actual_base) {
-		auto& reloc_dir = opt_header->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+	void ApplyRelocations(BYTE* mapped_image, PIMAGE_NT_HEADERS64 nt, ULONGLONG actual_base) {
+		auto& reloc_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
 		if (reloc_dir.VirtualAddress == 0) return; // no relocations
 
-		ULONGLONG delta = actual_base - opt_header->ImageBase;
+		ULONGLONG delta = actual_base - nt->OptionalHeader.ImageBase;
 		if (delta == 0) return;
 
 		auto reloc = (PIMAGE_BASE_RELOCATION)(mapped_image + reloc_dir.VirtualAddress);
@@ -109,9 +109,9 @@ private:
 		}
 	}
 
-	bool ResolveImports(BYTE* mapped_image, PIMAGE_OPTIONAL_HEADER64 opt_header) {
+	bool ResolveImports(BYTE* mapped_image, PIMAGE_NT_HEADERS64 nt) {
 		//auto& import_dir = nt_headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-		auto& import_dir = opt_header->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+		auto& import_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 		if (import_dir.VirtualAddress == 0) return false;
 
 		auto import_desc = reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(mapped_image + import_dir.VirtualAddress);
@@ -236,7 +236,7 @@ public:
 		return true;
 	}
 
-	ULONG_PTR getPointer(const ULONG_PTR* offsets, ULONG size) {
+	ULONG_PTR getOffsAddr(const ULONG_PTR* offsets, ULONG size) {
 
 		if (!is_attached()) return 0;
 
@@ -258,13 +258,13 @@ public:
 	}
 
 	template<typename T>
-	bool getPointerValue(ULONG_PTR address, T* value) {
+	bool getAddrValue(ULONG_PTR address, T* value) {
 		if (!is_attached()) return false;
 		ReadProcessMemory(hProcess, (LPCVOID)address, value, sizeof(T), nullptr);
 		return true;
 	}
 
-	bool readBytes(ULONG_PTR addr, ULONG amount, std::vector<BYTE>& buff) {
+	bool getAddrBytes(ULONG_PTR addr, ULONG amount, std::vector<BYTE>& buff) {
 		if (!is_attached()) return false;
 		if (!buff.empty()) buff.clear();
 		buff.resize(amount);
@@ -305,25 +305,19 @@ public:
 
 		uintptr_t shift = dosect_header->e_lfanew;
 
-		PIMAGE_NT_HEADERS64 nt_headers = reinterpret_cast<PIMAGE_NT_HEADERS64>(base + shift);
+		PIMAGE_NT_HEADERS64 nt = reinterpret_cast<PIMAGE_NT_HEADERS64>(base + shift);
 
-		shift += 4;
-		PIMAGE_FILE_HEADER file_header = reinterpret_cast<PIMAGE_FILE_HEADER>(base + shift);
+		PIMAGE_SECTION_HEADER sect_header = IMAGE_FIRST_SECTION(nt);
 
-		shift += sizeof(IMAGE_FILE_HEADER);
-		PIMAGE_OPTIONAL_HEADER64 opt_header = reinterpret_cast<PIMAGE_OPTIONAL_HEADER64>(base + shift);
-
-		PIMAGE_SECTION_HEADER sect_header = IMAGE_FIRST_SECTION(nt_headers);
-
-		WORD number_of_sections = file_header->NumberOfSections;
+		WORD number_of_sections = nt->FileHeader.NumberOfSections;
 
 
 		// Allocating and setting memory to 0's
-		BYTE* mapped_image = new BYTE[opt_header->SizeOfImage];
-		memset(mapped_image, 0, opt_header->SizeOfImage);
+		BYTE* mapped_image = new BYTE[nt->OptionalHeader.SizeOfImage];
+		memset(mapped_image, 0, nt->OptionalHeader.SizeOfImage);
 
 		// Copying headers
-		memcpy(mapped_image, base, opt_header->SizeOfHeaders);
+		memcpy(mapped_image, base, nt->OptionalHeader.SizeOfHeaders);
 
 		// Copying sections
 		for (int i = 0; i < number_of_sections; ++i) {
@@ -333,9 +327,9 @@ public:
 			memcpy(dest, src, size);
 		}
 
-		ApplyRelocations(mapped_image, opt_header, (ULONGLONG)mapped_image);
+		ApplyRelocations(mapped_image, nt, (ULONGLONG)mapped_image);
 
-		if (!ResolveImports(mapped_image, opt_header)) {
+		if (!ResolveImports(mapped_image, nt)) {
 			dlog("Failed to resolve imports\n");
 		}
 
@@ -347,7 +341,7 @@ public:
 		0x28, 0x4C, 0x03, 0xC9, 0x49, 0xFF, 0xE1
 		};
 
-		SIZE_T totalSize = opt_header->SizeOfImage + sizeof(Shellcode); // 0x1000 — запас под shell
+		SIZE_T totalSize = nt->OptionalHeader.SizeOfImage + sizeof(Shellcode); // 0x1000 — запас под shell
 		void* remote_mem = VirtualAllocEx(hProcess, nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 
 		// void* address = VirtualAllocEx(hProc, nullptr, opt_header->SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
@@ -358,9 +352,9 @@ public:
 			return 0;
 		}
 
-		WriteProcessMemory(hProcess, (void*)remote_mem, mapped_image, opt_header->SizeOfImage, nullptr);
+		WriteProcessMemory(hProcess, (void*)remote_mem, mapped_image, nt->OptionalHeader.SizeOfImage, nullptr);
 
-		void* shellcode_remote_addr = (BYTE*)remote_mem + opt_header->SizeOfImage;
+		void* shellcode_remote_addr = (BYTE*)remote_mem + nt->OptionalHeader.SizeOfImage;
 		WriteProcessMemory(hProcess, (void*)shellcode_remote_addr, Shellcode, sizeof(Shellcode), nullptr);
 
 		CreateRemoteThread(hProcess, nullptr, 0, (LPTHREAD_START_ROUTINE)shellcode_remote_addr, remote_mem, 0, nullptr);
