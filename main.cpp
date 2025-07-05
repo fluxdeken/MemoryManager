@@ -6,7 +6,7 @@ int main()
 	PPROCESS process = &processObj;
 
 	process->open(L"notepad.exe");
-	// if (process->injectMM("test.dll")) dlog("Manual mapping: Success\n");
+	if (process->injectMM("test.dll")) dlog("Manual mapping: Success\n");
 	// if (process->inject(L"test.dll")) dlog("Injecting: Success\n");
 	process->close();
     return 0;
@@ -15,7 +15,7 @@ int main()
 void dlog(const char* format, ...) {
 #ifdef _DEBUG
 	char buffer[512];
-	char* args;
+	va_list args;
 	va_start(args, format);
 	vsnprintf(buffer, sizeof(buffer), format, args);
 	va_end(args);
