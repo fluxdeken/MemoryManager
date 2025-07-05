@@ -11,7 +11,7 @@
 
 #define HEX(oneByte) std::uppercase << std::hex << std::setw(2) << std::setfill(L'0') << static_cast<int>((oneByte) & 0xFF) << L" "
 
-void dLog(const char* format, ...);
+void dlog(const char* format, ...);
 
 std::string wstring_to_utf8(const wchar_t* data);
 
@@ -29,10 +29,10 @@ private:
 		if (procId == 0) return false;
 		hProcess = OpenProcess(PROCESS_ALL_ACCESS, false, procId);
 		if (!hProcess || hProcess == INVALID_HANDLE_VALUE) {
-			dLog("Opening handle: failed.\n");
+			dlog("Opening handle: failed.\n");
 			return false;
 		}
-		dLog("Opening handle: success.\n");
+		dlog("Opening handle: success.\n");
 		return true;
 	}
 
@@ -47,7 +47,7 @@ private:
 				if (_wcsicmp(procName, pe.szExeFile) == 0) {
 					CloseHandle(hSnap);
 					procId = pe.th32ProcessID;
-					dLog("Process id: %u\n", procId);
+					dlog("Process id: %u\n", procId);
 					return true;
 				}
 			} while (Process32Next(hSnap, &pe));
@@ -69,7 +69,7 @@ private:
 				if (_wcsicmp(modName, me.szModule) == 0) {
 					CloseHandle(hSnap);
 					moduleSize = me.modBaseSize;
-					dLog("Module size: %u\n", moduleSize);
+					dlog("Module size: %u\n", moduleSize);
 					baseAddr = (ULONG_PTR)me.modBaseAddr;
 					return true;
 				}
@@ -172,10 +172,10 @@ public:
 
 	bool is_attached() {
 		if (hProcess && hProcess != INVALID_HANDLE_VALUE) {
-			dLog("Handle: opened.\n");
+			dlog("Handle: opened.\n");
 			return true;
 		}
-		dLog("Handle: closed.\n");
+		dlog("Handle: closed.\n");
 		return false;
 	}
 
@@ -253,7 +253,7 @@ public:
 		}
 
 		value += offsets[size - 1];
-		dLog("Address: %u\n", value);
+		dlog("Address: %u\n", value);
 		return value;
 	}
 
@@ -272,19 +272,25 @@ public:
 		return true;
 	}
 
-	int ManualMap(const char* dllName) {
+	int injectMM(const char* dllname) {
 
-		if (!is_attached()) return -1;
+		if (!is_attached()) {
+			dlog("Manual mapping: not attached\n");
+			return 0;
+		}
 
 		char cwd[MAX_PATH];
 		GetCurrentDirectoryA(MAX_PATH, cwd);
 
 		std::string fPath(cwd);
 		fPath += "\\";
-		fPath += dllName;
+		fPath += dllname;
 
 		std::ifstream fin(fPath.c_str(), std::ios::binary | std::ios::ate);
-		if (fin.fail()) return 1;
+		if (fin.fail()) {
+			dlog("Manual mapping: failed oppening dll");
+			return 0;
+		}
 
 		uintptr_t size = fin.tellg();
 		fin.seekg(0L, std::ios::beg);
@@ -307,9 +313,6 @@ public:
 		shift += sizeof(IMAGE_FILE_HEADER);
 		PIMAGE_OPTIONAL_HEADER64 opt_header = reinterpret_cast<PIMAGE_OPTIONAL_HEADER64>(base + shift);
 
-		// shift += sizeof(IMAGE_OPTIONAL_HEADER64);
-
-		//PIMAGE_SECTION_HEADER sect_header = reinterpret_cast<PIMAGE_SECTION_HEADER>(base + shift);
 		PIMAGE_SECTION_HEADER sect_header = IMAGE_FIRST_SECTION(nt_headers);
 
 		WORD number_of_sections = file_header->NumberOfSections;
@@ -333,7 +336,7 @@ public:
 		ApplyRelocations(mapped_image, opt_header, (ULONGLONG)mapped_image);
 
 		if (!ResolveImports(mapped_image, opt_header)) {
-			dLog("Failed to resolve imports\n");
+			dlog("Failed to resolve imports\n");
 		}
 
 
@@ -351,7 +354,7 @@ public:
 
 		if (remote_mem == NULL) {
 			delete[] mapped_image;
-			dLog("Allocation failed.\n");
+			dlog("Manual mapping: Allocation failed.\n");
 			return 0;
 		}
 
@@ -363,10 +366,10 @@ public:
 		CreateRemoteThread(hProcess, nullptr, 0, (LPTHREAD_START_ROUTINE)shellcode_remote_addr, remote_mem, 0, nullptr);
 
 		delete[] mapped_image;
-		return 0;
+		return 1;
 	}
 
-	bool inject(const wchar_t* dllPath) {
+	bool inject(const wchar_t* dllname) {
 		if (!is_attached()) {
 			return false;
 		}
@@ -406,7 +409,7 @@ public:
 		GetCurrentDirectoryW(MAX_PATH, cwd);
 		std::wstring fPath(cwd);
 		fPath += L"\\";
-		fPath += dllPath;
+		fPath += dllname;
 
 		std::string utf8dllPath = wstring_to_utf8(fPath.c_str());
 		SIZE_T bytesWritten = 0;
@@ -418,7 +421,7 @@ public:
 			LPVOID Memory = VirtualAllocEx(hProcess, NULL, utf8dllPathSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 			WriteProcessMemory(hProcess, (LPVOID)Memory, utf8dllPath.c_str(), utf8dllPathSize, &bytesWritten);
 
-			dLog("Dll path: %s\nbytesWritten: %u\n", utf8dllPath.c_str(), bytesWritten);
+			dlog("Dll path: %s\nbytesWritten: %u\n", utf8dllPath.c_str(), bytesWritten);
 
 			HANDLE hThread = CreateRemoteThread(hProcess, NULL, NULL,
 				(LPTHREAD_START_ROUTINE)remoteLoadLibraryAddr,
@@ -432,7 +435,7 @@ public:
 		return false;
 	}
 
-	bool eject(const wchar_t* dllName) {
+	bool eject(const wchar_t* dllname) {
 		if (!is_attached()) return false;
 
 		HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, procId);
@@ -461,7 +464,7 @@ public:
 					remoteFreeLibraryAddr = (LPVOID)((uintptr_t)remoteKernel32 + offset);
 					foundKernel = true;
 				}
-				else if (_wcsicmp(dllName, me.szModule) == 0) { // dll found
+				else if (_wcsicmp(dllname, me.szModule) == 0) { // dll found
 					remoteDllAddr = me.hModule;
 				}
 			} while (Module32Next(hSnap, &me));
@@ -486,6 +489,14 @@ public:
 	}
 
 	void clear() {
+		if (is_attached()) CloseHandle(hProcess);
+
+		hProcess = nullptr;
+		procId = 0;
+		baseAddr = 0;
+		moduleSize = 0;
+	}
+	void close() {
 		if (is_attached()) CloseHandle(hProcess);
 
 		hProcess = nullptr;

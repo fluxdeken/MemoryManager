@@ -4,10 +4,15 @@ int main()
 {
 	PROCESS processObj;
 	PPROCESS process = &processObj;
+
+	process->open(L"notepad.exe");
+	// if (process->injectMM("test.dll")) dlog("Manual mapping: Success\n");
+	// if (process->inject(L"test.dll")) dlog("Injecting: Success\n");
+	process->close();
     return 0;
 }
 
-void dLog(const char* format, ...) {
+void dlog(const char* format, ...) {
 #ifdef _DEBUG
 	char buffer[512];
 	char* args;
@@ -16,6 +21,10 @@ void dLog(const char* format, ...) {
 	va_end(args);
 
 	OutputDebugStringA(buffer);
+
+	if (GetConsoleWindow()) {
+		std::cout << buffer;
+	}
 #endif
 }
 
