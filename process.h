@@ -21,8 +21,6 @@ typedef class _PROCESS {
 private:
 	HANDLE hProcess;
 	UINT procId;
-
-	ULONG_PTR baseAddr;
 	ULONG_PTR moduleSize;
 
 	bool attach() {
@@ -151,7 +149,11 @@ private:
 	}
 
 public:
-	_PROCESS() {}
+	ULONG_PTR baseAddr;
+
+	_PROCESS():hProcess(nullptr), procId(0), 
+		baseAddr(0), moduleSize(0) {}
+
 	void open(const wchar_t* procName) {
 		clear();
 
@@ -172,12 +174,50 @@ public:
 
 	bool is_attached() {
 		if (hProcess && hProcess != INVALID_HANDLE_VALUE) {
-			dlog("Handle: opened.\n");
 			return true;
 		}
 		dlog("Handle: closed.\n");
 		return false;
 	}
+
+	void showMemInfo(ULONG_PTR addr) {
+		if (is_attached()) {
+			MEMORY_BASIC_INFORMATION mbi;
+			if (VirtualQueryEx(hProcess, (LPCVOID)addr, &mbi, sizeof(MEMORY_BASIC_INFORMATION))) {
+				dlog("memInfo:\n");
+				dlog("--BaseAddr: 0x%p\n", ULONG_PTR(mbi.BaseAddress));
+				dlog("--AllocationBase: 0x%p\n", ULONG_PTR(mbi.AllocationBase));
+				dlog("--AllocationProtect: 0x%X\n", mbi.AllocationProtect);
+				dlog("--PartitionId: %d\n", mbi.PartitionId);
+				dlog("--RegionSize: 0x%p\n", (ULONG_PTR)mbi.RegionSize);
+				dlog("--State: 0x%X\n", mbi.State);
+				dlog("--Protect: 0x%X\n", mbi.Protect);
+				dlog("--Type: 0x%X\n", mbi.Type);
+			}
+		}
+	}
+
+	bool getMemInfo(ULONG_PTR addr, PMEMORY_BASIC_INFORMATION mbi) {
+		if (!is_attached()) return false;
+
+		if (VirtualQueryEx(hProcess, (LPCVOID)addr, mbi, sizeof(MEMORY_BASIC_INFORMATION))) {
+			return true;
+		}
+		else {
+			dlog("getMemInfo: failed\n");
+			return false;
+		}
+	}
+
+	bool isRegionReadable(PMEMORY_BASIC_INFORMATION mbi) {
+		if (mbi->State == MEM_COMMIT &&
+			!(mbi->Protect & PAGE_GUARD) &&
+			!(mbi->Protect & PAGE_NOACCESS)) {
+			return true;
+		}
+		return false;
+	}
+
 
 	ULONG_PTR findPattern(const char* ptrn, size_t ptrnSz) {
 
@@ -236,7 +276,7 @@ public:
 		return true;
 	}
 
-	ULONG_PTR getOffsAddr(const ULONG_PTR* offsets, ULONG size) {
+	ULONG_PTR getAddrByOffset(const ULONG_PTR* offsets, ULONG size) {
 
 		if (!is_attached()) return 0;
 
@@ -245,10 +285,10 @@ public:
 
 		for (ULONG i = 0; i < size - 1; i++) {
 			address += offsets[i];
-			//bool result = 
+
 			ReadProcessMemory(hProcess, (LPCVOID)address,
 				&value, sizeof(ULONG_PTR), nullptr);
-			//if(!result) return 0;
+
 			address = value;
 		}
 
@@ -258,32 +298,30 @@ public:
 	}
 
 	template<typename T>
-	bool getAddrValue(ULONG_PTR address, T* value) {
+	bool getAddrVal (ULONG_PTR address, T* value) {
 		if (!is_attached()) return false;
 		ReadProcessMemory(hProcess, (LPCVOID)address, value, sizeof(T), nullptr);
 		return true;
 	}
 
-	bool getAddrBytes(ULONG_PTR addr, ULONG amount, std::vector<BYTE>& buff) {
+	bool getAddrBytes(ULONG_PTR addr, ULONG_PTR amount, BYTE* buff) {
 		if (!is_attached()) return false;
-		if (!buff.empty()) buff.clear();
-		buff.resize(amount);
-		ReadProcessMemory(hProcess, (LPVOID)addr, buff.data(), amount, nullptr);
+		ReadProcessMemory(hProcess, (LPVOID)addr, buff, amount, nullptr);
 		return true;
 	}
 
-	int injectMM(const char* dllname) {
+	int injectMM(const wchar_t* dllname) {
 
 		if (!is_attached()) {
 			dlog("Manual mapping: not attached\n");
 			return 0;
 		}
 
-		char cwd[MAX_PATH];
-		GetCurrentDirectoryA(MAX_PATH, cwd);
+		WCHAR cwd[MAX_PATH];
+		GetCurrentDirectory(MAX_PATH, cwd);
 
-		std::string fPath(cwd);
-		fPath += "\\";
+		std::wstring fPath(cwd);
+		fPath += L"\\";
 		fPath += dllname;
 
 		std::ifstream fin(fPath.c_str(), std::ios::binary | std::ios::ate);

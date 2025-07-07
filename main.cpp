@@ -6,8 +6,11 @@ int main()
 	PPROCESS process = &processObj;
 
 	process->open(L"notepad.exe");
-	if (process->injectMM("test.dll")) dlog("Manual mapping: Success\n");
+	//process->showMemInfo(process->baseAddr + 0x1001);
+	// process->showMemInfo(0x0000007BE72FF8E4);
+	if (process->injectMM(L"test.dll")) dlog("Manual mapping: Success\n");
 	// if (process->inject(L"test.dll")) dlog("Injecting: Success\n");
+	
 	process->close();
     return 0;
 }
