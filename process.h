@@ -1,13 +1,4 @@
-#include <iostream>
-#include <windows.h>
-#include <shobjidl.h>
-#include <tlhelp32.h>
-#include <fstream>
-#include <string>
-#include <vector>
-
-#include <sstream>
-#include <iomanip>
+#include "stdafx.h"
 
 #define HEX(oneByte) std::uppercase << std::hex << std::setw(2) << std::setfill(L'0') << static_cast<int>((oneByte) & 0xFF) << L" "
 
