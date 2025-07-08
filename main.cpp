@@ -35,7 +35,14 @@ int main()
 	PROCESS processObj;
 	PPROCESS process = &processObj;
 
-	MessageBox(NULL, L"Smthg", L"Info", MB_OK);
+	process->open(L"notepad.exe");
+	process->inject(L"test.dll");
+	// process->showMemInfo(process->baseAddr);
+	// process->injectMM(L"DLL_Injected.dll");
+	// process->eject(L"test.dll");
+	process->close();
+
+	/*MessageBox(NULL, L"Smthg", L"Info", MB_OK);
 
 	CreateMinHook(&MessageBoxW, &DetourMessageBoxW, &fpMessageBoxW);
 
@@ -45,16 +52,8 @@ int main()
 
 	MH_Uninitialize();
 
-	MessageBox(NULL, L"Smthg", L"Info", MB_OK);
+	MessageBox(NULL, L"Smthg", L"Info", MB_OK);*/
 
-	process->open(L"notepad.exe");
-	// process->showMemInfo(process->baseAddr);
-	// if (process->injectMM(L"DLL_Injected.dll")) dlog("Manual mapping: Success\n");
-	// if (process->inject(L"test.dll")) dlog("Injecting: Success\n");
-	// if (process->eject(L"test.dll")) dlog("Ejecting: Success\n");
-	
-	if (process->inject(L"test.dll")) dlog("Manual mapping: Success\n");
-	process->close();
     return 0;
 }
 

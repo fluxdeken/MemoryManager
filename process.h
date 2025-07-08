@@ -398,6 +398,7 @@ public:
 		CreateRemoteThread(hProcess, nullptr, 0, (LPTHREAD_START_ROUTINE)shellcode_remote_addr, remote_mem, 0, nullptr);
 
 		delete[] mapped_image;
+		dlog("Manual mapping: Success\n");
 		return 1;
 	}
 
@@ -461,9 +462,11 @@ public:
 
 			if (hThread) {
 				CloseHandle(hThread);
+				dlog("Injectinng: Success\n");
 				return true;
 			}
 		}
+		dlog("Injecting: Failure\n");
 		return false;
 	}
 
@@ -510,13 +513,11 @@ public:
 				remoteDllAddr, 0, NULL);
 			if (hThread) {
 				CloseHandle(hThread);
+				dlog("Ejectinng: Success\n");
 				return true;
 			}
-			else {
-				return false;
-			}
 		}
-
+		dlog("Ejectinng: Failure\n");
 		return false;
 	}
 
