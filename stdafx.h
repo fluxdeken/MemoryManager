@@ -9,3 +9,5 @@
 
 #include <sstream>
 #include <iomanip>
+
+#include <MinHook.h>

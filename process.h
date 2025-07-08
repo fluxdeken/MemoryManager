@@ -1,5 +1,11 @@
 #include "stdafx.h"
 
+#if defined _M_X64
+#pragma comment(lib, "bin/MinHook.x64.lib")
+#elif defined _M_IX86
+#pragma comment(lib, "bin/MinHook.x86.lib")
+#endif
+
 #define HEX(oneByte) std::uppercase << std::hex << std::setw(2) << std::setfill(L'0') << static_cast<int>((oneByte) & 0xFF) << L" "
 
 void dlog(const char* format, ...);
@@ -179,7 +185,9 @@ public:
 				dlog("--BaseAddr: 0x%p\n", ULONG_PTR(mbi.BaseAddress));
 				dlog("--AllocationBase: 0x%p\n", ULONG_PTR(mbi.AllocationBase));
 				dlog("--AllocationProtect: 0x%X\n", mbi.AllocationProtect);
+#if defined _M_X64
 				dlog("--PartitionId: %d\n", mbi.PartitionId);
+#endif
 				dlog("--RegionSize: 0x%p\n", (ULONG_PTR)mbi.RegionSize);
 				dlog("--State: 0x%X\n", mbi.State);
 				dlog("--Protect: 0x%X\n", mbi.Protect);
@@ -209,21 +217,21 @@ public:
 		return false;
 	}
 
-
 	ULONG_PTR findPattern(const char* ptrn, size_t ptrnSz) {
 
 		if (!is_attached()) return 0;
 
 		const size_t limit = moduleSize - ptrnSz - 1;
 
-		std::vector<char> buffer;
-		buffer.resize(moduleSize);
+		std::vector<char> buff;
+		buff.resize(moduleSize);
+		//std::unique_ptr<char[]> buff(new char[moduleSize]);
 
-		ReadProcessMemory(hProcess, (LPCVOID)baseAddr, &buffer[0], moduleSize, nullptr);
+		ReadProcessMemory(hProcess, (LPCVOID)baseAddr, buff.data(), moduleSize, nullptr);
 
 		for (ULONG_PTR i = 0; i < limit; i++) {
-			if (buffer[i] == ptrn[0] &&
-				memcmp(&buffer[i], &ptrn[0], ptrnSz - 1) == 0)
+			if (buff[i] == ptrn[0] &&
+				memcmp(buff.data(), &ptrn[0], ptrnSz - 1) == 0)
 			{
 				ULONG_PTR output = baseAddr + i;
 				return output;
@@ -239,15 +247,16 @@ public:
 
 		const size_t limit = moduleSize - ptrnSz - 1;
 
-		std::vector<char> buffer;
-		buffer.resize(moduleSize);
+		std::vector<char> buff;
+		buff.resize(moduleSize);
+		// std::unique_ptr<char[]> buff(new char[moduleSize]);
 
-		ReadProcessMemory(hProcess, (LPCVOID)baseAddr, &buffer[0], moduleSize, nullptr);
+		ReadProcessMemory(hProcess, (LPCVOID)baseAddr, buff.data(), moduleSize, nullptr);
 
 		for (size_t i = 0; i < limit; ++i) {
 			bool found = true;
 			for (size_t j = 0; mask[j]; ++j) {
-				if (mask[j] != '?' && ptrn[j] != buffer[i + j]) {
+				if (mask[j] != '?' && ptrn[j] != buff[i + j]) {
 					found = false;
 					break;
 				}
