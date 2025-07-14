@@ -1,11 +1,5 @@
 #include "stdafx.h"
 
-#if defined _M_X64
-#pragma comment(lib, "bin/MinHook.x64.lib")
-#elif defined _M_IX86
-#pragma comment(lib, "bin/MinHook.x86.lib")
-#endif
-
 #define HEX(oneByte) std::uppercase << std::hex << std::setw(2) << std::setfill(L'0') << static_cast<int>((oneByte) & 0xFF) << L" "
 
 void dlog(const char* format, ...);
@@ -74,7 +68,7 @@ private:
 		return false;
 	}
 
-	void ApplyRelocations(BYTE* mapped_image, PIMAGE_NT_HEADERS64 nt, ULONGLONG actual_base) {
+	inline void ApplyRelocations(BYTE* mapped_image, PIMAGE_NT_HEADERS64 nt, ULONGLONG actual_base) {
 		auto& reloc_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
 		if (reloc_dir.VirtualAddress == 0) return; // no relocations
 
@@ -104,7 +98,7 @@ private:
 		}
 	}
 
-	bool ResolveImports(BYTE* mapped_image, PIMAGE_NT_HEADERS64 nt) {
+	inline bool ResolveImports(BYTE* mapped_image, PIMAGE_NT_HEADERS64 nt) {
 		//auto& import_dir = nt_headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 		auto& import_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 		if (import_dir.VirtualAddress == 0) return false;
@@ -365,12 +359,11 @@ public:
 			memcpy(dest, src, size);
 		}
 
-		ApplyRelocations(mapped_image, nt, (ULONGLONG)mapped_image);
-
-		if (!ResolveImports(mapped_image, nt)) {
-			dlog("Failed to resolve imports\n");
-		}
-
+		std::thread t1(&_PROCESS::ApplyRelocations, this, mapped_image, nt, (ULONGLONG)mapped_image);
+		std::thread t2(&_PROCESS::ResolveImports, this, mapped_image, nt);
+		
+		t1.join();
+		t2.join();
 
 		// Final steps
 		unsigned char Shellcode[] = {
@@ -462,7 +455,7 @@ public:
 
 			if (hThread) {
 				CloseHandle(hThread);
-				dlog("Injectinng: Success\n");
+				dlog("Injecting: Success\n");
 				return true;
 			}
 		}
