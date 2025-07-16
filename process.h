@@ -139,6 +139,78 @@ private:
 		return true;
 	}
 
+	inline void RunTLSCallbacks(BYTE* mapped_image, PIMAGE_NT_HEADERS64 nt, ULONGLONG remote_base) {
+		auto& tlsDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+		if (tlsDir.VirtualAddress == 0 || tlsDir.Size == 0)
+			return;
+
+		auto tls = reinterpret_cast<PIMAGE_TLS_DIRECTORY64>(mapped_image + tlsDir.VirtualAddress);
+
+		ULONGLONG original_base = nt->OptionalHeader.ImageBase;
+		ULONGLONG delta = remote_base - original_base;
+
+		ULONGLONG callbacksVA = tls->AddressOfCallBacks;
+		if (callbacksVA == 0)
+			return;
+
+		ULONGLONG relocatedCallbacksVA = callbacksVA + delta;
+
+		// Читаем массив колбэков из памяти удалённого процесса
+		SIZE_T ptrSize = sizeof(void*);
+		std::vector<ULONGLONG> callbacksVec;
+
+		for (size_t i = 0;; ++i) {
+			ULONGLONG callbackAddr = 0;
+			SIZE_T bytesRead = 0;
+			BOOL res = ReadProcessMemory(
+				hProcess,
+				(LPCVOID)(relocatedCallbacksVA + i * ptrSize),
+				&callbackAddr,
+				ptrSize,
+				&bytesRead
+			);
+
+			if (!res || bytesRead != ptrSize || callbackAddr == 0)
+				break;
+
+			callbacksVec.push_back(callbackAddr);
+		}
+
+		// Запускаем callbacks
+		for (ULONGLONG addr : callbacksVec) {
+			auto callback = reinterpret_cast<PIMAGE_TLS_CALLBACK>(addr);
+			callback((LPVOID)remote_base, DLL_PROCESS_ATTACH, nullptr);
+		}
+	}
+
+	inline DWORD GetExportRVA(const char* funcName, BYTE* dllBase)
+	{
+		auto dos = (PIMAGE_DOS_HEADER)dllBase;
+		auto nt = (PIMAGE_NT_HEADERS64)(dllBase + dos->e_lfanew);
+		auto& exportDirData = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+
+		if (exportDirData.VirtualAddress == 0)
+			return 0;
+
+		auto exportDir = (PIMAGE_EXPORT_DIRECTORY)(dllBase + exportDirData.VirtualAddress);
+
+		DWORD* names = (DWORD*)(dllBase + exportDir->AddressOfNames);
+		WORD* ordinals = (WORD*)(dllBase + exportDir->AddressOfNameOrdinals);
+		DWORD* functions = (DWORD*)(dllBase + exportDir->AddressOfFunctions);
+
+		for (DWORD i = 0; i < exportDir->NumberOfNames; ++i) {
+			const char* currName = (const char*)(dllBase + names[i]);
+			if (strcmp(currName, funcName) == 0) {
+				WORD ordinal = ordinals[i];
+				DWORD funcRVA = functions[ordinal];
+				return funcRVA;
+			}
+		}
+
+		return 0; // not found
+	}
+
+
 public:
 	ULONG_PTR baseAddr;
 
@@ -304,8 +376,9 @@ public:
 		return true;
 	}
 
-	int injectMM(const wchar_t* dllname) {
 
+	// Modified injectMM to use hardcoded shellcode instead of ReflectiveLoader
+	int injectMM(const wchar_t* dllname) {
 		if (!is_attached()) {
 			dlog("Manual mapping: not attached\n");
 			return 0;
@@ -314,86 +387,89 @@ public:
 		WCHAR cwd[MAX_PATH];
 		GetCurrentDirectory(MAX_PATH, cwd);
 
-		std::wstring fPath(cwd);
-		fPath += L"\\";
-		fPath += dllname;
+		std::wstring fPath = std::wstring(cwd) + L"\\" + dllname;
 
-		std::ifstream fin(fPath.c_str(), std::ios::binary | std::ios::ate);
+		std::ifstream fin(fPath, std::ios::binary | std::ios::ate);
 		if (fin.fail()) {
-			dlog("Manual mapping: failed oppening dll");
+			dlog("Manual mapping: failed opening DLL\n");
 			return 0;
 		}
 
 		uintptr_t size = fin.tellg();
-		fin.seekg(0L, std::ios::beg);
-
+		fin.seekg(0, std::ios::beg);
 		std::vector<BYTE> buff(size);
 		fin.read(reinterpret_cast<char*>(buff.data()), size);
 		fin.close();
 
 		BYTE* base = buff.data();
-
-		PIMAGE_DOS_HEADER dosect_header = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
-
-		uintptr_t shift = dosect_header->e_lfanew;
-
-		PIMAGE_NT_HEADERS64 nt = reinterpret_cast<PIMAGE_NT_HEADERS64>(base + shift);
-
-		PIMAGE_SECTION_HEADER sect_header = IMAGE_FIRST_SECTION(nt);
-
+		auto dos = (PIMAGE_DOS_HEADER)base;
+		auto nt = (PIMAGE_NT_HEADERS64)(base + dos->e_lfanew);
+		auto sect_header = IMAGE_FIRST_SECTION(nt);
 		WORD number_of_sections = nt->FileHeader.NumberOfSections;
 
+		std::vector<BYTE> mapped_image(nt->OptionalHeader.SizeOfImage);
+		memcpy(mapped_image.data(), base, nt->OptionalHeader.SizeOfHeaders);
 
-		// Allocating and setting memory to 0's
-		BYTE* mapped_image = new BYTE[nt->OptionalHeader.SizeOfImage];
-		memset(mapped_image, 0, nt->OptionalHeader.SizeOfImage);
-
-		// Copying headers
-		memcpy(mapped_image, base, nt->OptionalHeader.SizeOfHeaders);
-
-		// Copying sections
 		for (int i = 0; i < number_of_sections; ++i) {
-			BYTE* dest = mapped_image + sect_header[i].VirtualAddress;
+			BYTE* dest = mapped_image.data() + sect_header[i].VirtualAddress;
 			BYTE* src = base + sect_header[i].PointerToRawData;
-			size_t size = sect_header[i].SizeOfRawData;
+			size_t size = std::min<size_t>(sect_header[i].SizeOfRawData, sect_header[i].Misc.VirtualSize);
 			memcpy(dest, src, size);
 		}
 
-		std::thread t1(&_PROCESS::ApplyRelocations, this, mapped_image, nt, (ULONGLONG)mapped_image);
-		std::thread t2(&_PROCESS::ResolveImports, this, mapped_image, nt);
-		
-		t1.join();
-		t2.join();
-
-		// Final steps
-		unsigned char Shellcode[] = {
-		0x48, 0x63, 0x41, 0x3C, 0x45, 0x33, 0xC0, 0xBA,
-		0x01, 0x00, 0x00, 0x00, 0x44, 0x8B, 0x4C, 0x08,
-		0x28, 0x4C, 0x03, 0xC9, 0x49, 0xFF, 0xE1
-		};
-
-		SIZE_T totalSize = nt->OptionalHeader.SizeOfImage + sizeof(Shellcode); // 0x1000 — запас под shell
-		void* remote_mem = VirtualAllocEx(hProcess, nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-
-		// void* address = VirtualAllocEx(hProc, nullptr, opt_header->SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-
-		if (remote_mem == NULL) {
-			delete[] mapped_image;
+		void* remote_mem = VirtualAllocEx(hProcess, nullptr, nt->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+		if (!remote_mem) {
 			dlog("Manual mapping: Allocation failed.\n");
 			return 0;
 		}
 
-		WriteProcessMemory(hProcess, (void*)remote_mem, mapped_image, nt->OptionalHeader.SizeOfImage, nullptr);
+		ApplyRelocations(mapped_image.data(), nt, (ULONGLONG)remote_mem);
+		if (!ResolveImports(mapped_image.data(), nt)) {
+			std::cout << "Error resolving imports\n";
+		}
 
-		void* shellcode_remote_addr = (BYTE*)remote_mem + nt->OptionalHeader.SizeOfImage;
-		WriteProcessMemory(hProcess, (void*)shellcode_remote_addr, Shellcode, sizeof(Shellcode), nullptr);
+		WriteProcessMemory(hProcess, remote_mem, mapped_image.data(), nt->OptionalHeader.SizeOfImage, nullptr);
 
-		CreateRemoteThread(hProcess, nullptr, 0, (LPTHREAD_START_ROUTINE)shellcode_remote_addr, remote_mem, 0, nullptr);
+		//RunTLSCallbacks(mapped_image.data(), nt, (ULONGLONG)remote_mem);
 
-		delete[] mapped_image;
+		// Replace reflective loader call with shellcode
+		/*unsigned char ShellcodeWithoutTLS[] = {
+			0x48, 0x63, 0x41, 0x3C, 0x45, 0x33, 0xC0, 0xBA,
+			0x01, 0x00, 0x00, 0x00, 0x44, 0x8B, 0x4C, 0x08,
+			0x28, 0x4C, 0x03, 0xC9, 0x49, 0xFF, 0xE1
+		};*/
+		unsigned char Shellcode[] = {
+			0x40, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x89,
+			0x74, 0x24, 0x38, 0x48, 0x8B, 0xF9, 0x48, 0x63,
+			0x71, 0x3C, 0x8B, 0x84, 0x0E, 0xD0, 0x00, 0x00,
+			0x00, 0x85, 0xC0, 0x74, 0x42, 0x83, 0xBC, 0x0E,
+			0xD4, 0x00, 0x00, 0x00, 0x00, 0x74, 0x38, 0x48,
+			0x89, 0x5C, 0x24, 0x30, 0x48, 0x8B, 0x5C, 0x08,
+			0x18, 0x48, 0x85, 0xDB, 0x74, 0x24, 0x48, 0x8B,
+			0x03, 0x48, 0x85, 0xC0, 0x74, 0x1C, 0x66, 0x90,
+			0x45, 0x33, 0xC0, 0xBA, 0x01, 0x00, 0x00, 0x00,
+			0x48, 0x8B, 0xCF, 0xFF, 0xD0, 0x48, 0x8B, 0x43,
+			0x08, 0x48, 0x8D, 0x5B, 0x08, 0x48, 0x85, 0xC0,
+			0x75, 0xE6, 0x48, 0x8B, 0x5C, 0x24, 0x30, 0x8B,
+			0x44, 0x3E, 0x28, 0x48, 0x8B, 0x74, 0x24, 0x38,
+			0x85, 0xC0, 0x74, 0x16, 0x48, 0x03, 0xC7, 0x45,
+			0x33, 0xC0, 0xBA, 0x01, 0x00, 0x00, 0x00, 0x48,
+			0x8B, 0xCF, 0x48, 0x83, 0xC4, 0x20, 0x5F, 0x48,
+			0xFF, 0xE0, 0x48, 0x83, 0xC4, 0x20, 0x5F, 0xC3 };
+
+		void* remote_shellcode = VirtualAllocEx(hProcess, nullptr, sizeof(Shellcode), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+		if (!remote_shellcode) {
+			dlog("Manual mapping: Shellcode allocation failed\n");
+			return 0;
+		}
+
+		WriteProcessMemory(hProcess, remote_shellcode, Shellcode, sizeof(Shellcode), nullptr);
+
+		CreateRemoteThread(hProcess, nullptr, 0, (LPTHREAD_START_ROUTINE)remote_shellcode, remote_mem, 0, nullptr);
 		dlog("Manual mapping: Success\n");
 		return 1;
 	}
+
 
 	bool inject(const wchar_t* dllname) {
 		if (!is_attached()) {
