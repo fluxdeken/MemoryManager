@@ -1,19 +1,19 @@
 #include "stdafx.h"
 
 void dlog(const char* format, ...) {
-#ifdef _DEBUG
 	char buffer[512];
 	va_list args;
 	va_start(args, format);
 	vsnprintf(buffer, sizeof(buffer), format, args);
 	va_end(args);
 
+#ifdef _DEBUG
 	OutputDebugStringA(buffer);
+#endif
 
 	if (GetConsoleWindow()) {
 		std::cout << buffer;
 	}
-#endif
 }
 
 std::string wstring_to_utf8(const wchar_t* data) {
